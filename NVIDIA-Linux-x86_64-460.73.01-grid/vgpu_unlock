@@ -1,0 +1,247 @@
+#!/bin/python3
+#
+# vGPU unlock script for consumer GPUs.
+#
+# Copyright 2021 Jonathan Johansson
+# This file is part of the "vgpu_unlock" project, and is distributed under the MIT License.
+# See the LICENSE file for more details.
+#
+# Contributions from Krutav Shah and the vGPU Unlocking community included :)
+#
+
+import errno
+import frida
+import os
+import queue
+import subprocess
+import sys
+import time
+
+script_source = r"""
+    var syslog_func = new NativeFunction(Module.getExportByName(null, "syslog"),
+                                         "void",
+                                         ["int", "pointer", "...", "pointer"]);
+
+    var syslog = function(message) {
+        var format_ptr = Memory.allocUtf8String("%s");
+        var message_ptr = Memory.allocUtf8String(message);
+        syslog_func(5, format_ptr, message_ptr);
+    };
+
+
+    // Value of the "request" argument used by nvidia-vgpud and nvidia-vgpu-mgr
+    // when calling ioctl to read the PCI device ID and type (and possibly
+    // other things) from the GPU.
+    var REQ_QUERY_GPU = ptr("0xC020462A");
+
+    // When issuing ioctl with REQ_QUERY_GPU then the "argp" argument is a
+    // pointer to a structure something like this:
+    //
+    // struct arg {
+    //    uint32_t unknown_1; // Initialized prior to call.
+    //    uint32_t unknown_2; // Initialized prior to call.
+    //    uint32_t op_type;   // Operation type, see comment below.
+    //    uint32_t padding_1; // Always set to 0 prior to call.
+    //    void*    result;    // Pointer initialized prior to call.
+    //                        // Pointee initialized to 0 prior to call.
+    //                        // Pointee is written by ioctl call.
+    //    uint32_t unknown_4; // Set to 0x10 for READ_PCI_ID and set to 4 for
+                              // READ_DEV_TYPE prior to call.
+    //    uint32_t status;    // Written by ioctl call. See comment below.
+    // }
+
+    // These are the observed values for the op_type member.
+    var OP_READ_DEV_TYPE = 0x800289; // *result type is uint64_t.
+    var OP_READ_PCI_ID = 0x20801801; // *result type is uint16_t[4], the second
+                                     // element (index 1) is the device ID, the
+                                     // forth element (index 3) is the subsystem
+                                     // ID.
+
+    // nvidia-vgpu-mgr expects this value for a vGPU capable GPU.
+    var DEV_TYPE_VGPU_CAPABLE = uint64(3);
+
+    // When ioctl returns success (retval >= 0) but sets the status value of
+    // the arg structure to 3 then nvidia-vgpud will sleep for a bit (first
+    // 0.1s then 1s then 10s) then issue the same ioctl call again until the
+    // status differs from 3. It will attempt this for up to 24h before giving
+    // up.
+    var STATUS_OK = 0;
+    var STATUS_TRY_AGAIN = 3;
+
+    Interceptor.attach(Module.getExportByName(null, "ioctl"), {
+        onEnter(args) {
+            this.request = args[1];
+            this.argp = args[2];
+        },
+        onLeave(retVal) {
+            if(!this.request.equals(REQ_QUERY_GPU)) {
+                // Not a call we care about.
+                return;
+            }
+
+            if(retVal.toInt32() < 0) {
+                // Call failed.
+                return;
+            }
+
+            // Lookup status value according to struct above.
+            var status = this.argp.add(0x1C).readU32();
+
+            if(status == STATUS_TRY_AGAIN) {
+                // Driver will try again.
+                return;
+            }
+
+            var op_type = this.argp.add(8).readU32();
+
+            if(op_type == OP_READ_PCI_ID) {
+                // Lookup address of the device and subsystem IDs.
+                var devid_ptr = this.argp.add(0x10).readPointer().add(2);
+                var subsysid_ptr = this.argp.add(0x10).readPointer().add(6);
+
+                // Now we replace the device ID with a spoofed value that needs to
+                // be determined such that the spoofed value represents a GPU with
+                // vGPU support that uses the same GPU chip as our actual GPU.
+                var actual_devid = devid_ptr.readU16();
+                var spoofed_devid = actual_devid;
+                var actual_subsysid = subsysid_ptr.readU16();
+                var spoofed_subsysid = actual_subsysid;
+                
+                // Maxwell
+                if(0x1340 <= actual_devid && actual_devid <= 0x13bd ||
+                   0x174d <= actual_devid && actual_devid <= 0x179c) {
+                    spoofed_devid = 0x13bd; // Tesla M10
+                    spoofed_subsysid = 0x1160;
+                }
+
+                // Maxwell 2.0
+                if(0x13c0 <= actual_devid && actual_devid <= 0x1436 ||
+                   0x1617 <= actual_devid && actual_devid <= 0x1667 ||
+                   0x17c2 <= actual_devid && actual_devid <= 0x17fd) {
+                    spoofed_devid = 0x13f2; // Tesla M60
+                }
+
+                // Pascal
+                if(0x15f0 <= actual_devid && actual_devid <= 0x15f1 ||
+                   0x1b00 <= actual_devid && actual_devid <= 0x1d56 ||
+                   0x1725 <= actual_devid && actual_devid <= 0x172f) {
+                    spoofed_devid = 0x1b38; // Tesla P40
+                }
+
+                // GV100 Volta
+                if(actual_devid == 0x1d81 || // TITAN V
+                   actual_devid == 0x1dba) { // Quadro GV100 32GB
+                    spoofed_devid = 0x1db6; // Tesla V100 32GB PCIE
+                }
+
+                // Turing
+                if(0x1e02 <= actual_devid && actual_devid <= 0x1ff9 ||
+                   0x2182 <= actual_devid && actual_devid <= 0x21d1) {
+                    spoofed_devid = 0x1e30; // Quadro RTX 6000
+                    spoofed_subsysid = 0x12ba;
+                }
+
+                // Ampere
+                if(0x2200 <= actual_devid && actual_devid <= 0x2600) {
+                    spoofed_devid = 0x2230; // RTX A6000
+                }
+
+                devid_ptr.writeU16(spoofed_devid);
+                subsysid_ptr.writeU16(spoofed_subsysid);
+            }
+            
+            if(op_type == OP_READ_DEV_TYPE) {
+                // Set device type to vGPU capable.
+                var dev_type_ptr = this.argp.add(0x10).readPointer();
+                dev_type_ptr.writeU64(DEV_TYPE_VGPU_CAPABLE);
+            }
+
+            if(status != STATUS_OK) {
+                // Things seems to work fine even if some operations that fail
+                // result in failed assertions. So here we change the status
+                // value for these cases to cleanup the logs for nvidia-vgpu-mgr.
+                if(op_type == 0xA0820104 ||
+                   op_type == 0x90960103) {
+                    this.argp.add(0x1C).writeU32(STATUS_OK);
+                } else {
+                    syslog("op_type: 0x" + op_type.toString(16) + " failed.");
+                }
+            }
+
+            // Workaround for some Maxwell cards not supporting reading inforom.
+            if(op_type == 0x2080014b && status == 0x56) {
+                this.argp.add(0x1C).writeU32(0x57);
+            }
+        }
+    });
+
+    syslog("vgpu_unlock loaded.");
+"""
+
+device = frida.get_local_device()
+child_processes = queue.Queue()
+
+def instrument(pid):
+    """Instrument and resume process.
+
+    :param pid: Process identifier
+    """
+
+    session = device.attach(pid)
+    # We need to also instrument the children since nvidia-vgpud forks itself
+    # when initially launched.
+    session.enable_child_gating()
+    script = session.create_script(script_source)
+    script.load()
+    device.resume(pid)
+
+
+def on_child_added(child):
+    """Callback for when a new child process has been created.
+
+    :param child: The newly created child process.
+    """
+
+    child_processes.put(child.pid)
+    instrument(child.pid)
+
+
+def wait_exit(pid):
+    """Wait for a process to terminate.
+
+    :param pid: Process ID of the target process.
+    """
+
+    while 1:
+        time.sleep(.1)
+
+        try:
+            os.kill(pid, 0)
+
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                break
+
+
+def main():
+    """Entrypoint."""
+
+    # Behave at least a little bit like a forking service.
+    if sys.argv[1] != "-f":
+        subprocess.Popen([sys.argv[0], "-f"] + sys.argv[1:])
+        exit()
+
+    device.on("child-added", on_child_added)
+    pid = device.spawn(["/bin/bash", "-c", ' '.join(sys.argv[2:])])
+    instrument(pid)
+
+    # Wait for everything to terminate before exiting.
+    wait_exit(pid)
+
+    while not child_processes.empty():
+        wait_exit(child_processes.get_nowait())
+
+
+if __name__ == "__main__":
+    main()
+

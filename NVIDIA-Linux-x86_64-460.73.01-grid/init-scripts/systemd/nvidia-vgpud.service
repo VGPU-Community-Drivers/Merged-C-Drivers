@@ -1,4 +1,4 @@
-# NVIDIA Grid Daemon Init Script
+# NVIDIA vGPU Daemon Init Script
 #
 # Copyright (c) 2015 NVIDIA Corporation
 #
@@ -8,15 +8,15 @@
 #
 
 [Unit]
-Description=NVIDIA Grid Daemon
+Description=NVIDIA vGPU Daemon
 Wants=syslog.target
 
 [Service]
 Type=forking
-ExecStart=/usr/bin/vgpu_unlock /usr/bin/nvidia-gridd
-ExecStopPost=/bin/rm -rf /var/run/nvidia-gridd
-Environment="__RM_NO_VERSION_CHECK=1"
-Environment="LD_LIBRARY_PATH=/usr/lib/nvidia/gridd"
+ExecStart=/usr/bin/nvidia-vgpud
+ExecStopPost=/bin/rm -rf /var/run/nvidia-vgpud
+Environment=LD_PRELOAD=/usr/lib/nvidia/libvgpu-unlock.so
+Environment=__RM_NO_VERSION_CHECK=1
 
 [Install]
 WantedBy=multi-user.target
