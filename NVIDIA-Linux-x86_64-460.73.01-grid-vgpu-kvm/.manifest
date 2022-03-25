@@ -6,6 +6,9 @@ nvidia nvidia-uvm nvidia-modeset nvidia-drm nvidia-vgpu-vfio
  
 ./kernel/
 ./kernel/precompiled/
+kernel/patches/twelve.patch 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
+kernel/patches/fourteen.patch 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
+kernel/patches/sixteen.patch 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
 kernel/nvidia/nv-kernel.o_binary 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
 kernel/nvidia/nv.c 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
 kernel/nvidia/nv-pci.c 0644 KERNEL_MODULE_SRC INHERIT_PATH_DEPTH:1 MODULE:resman
@@ -195,6 +198,7 @@ libFlxCore64.so 0000 FLEXERA_LIB_SYMLINK /nvidia/gridd libFlxCore64.so.2018.02 M
 libFlxComm64.so.2018.02 0755 FLEXERA_LIB /nvidia/gridd MODULE:vgpu
 libFlxComm64.so 0000 FLEXERA_LIB_SYMLINK /nvidia/gridd libFlxComm64.so.2018.02 MODULE:vgpu
 grid-third-party-licenses.txt 0444 EXPLICIT_PATH /usr/share/nvidia/ MODULE:vgpu
+LICENSE.vgpu_unlock-rs 0444 EXPLICIT_PATH /usr/share/nvidia MODULE:vgpu
 libvdpau_nvidia.so.460.73.01 0755 VDPAU_LIB NATIVE vdpau/ MODULE:vdpau
 libvdpau_nvidia.so.1 0000 VDPAU_SYMLINK NATIVE vdpau/ libvdpau_nvidia.so.460.73.01 MODULE:vdpau
 libvdpau_nvidia.so 0000 VDPAU_SYMLINK NATIVE / vdpau/libvdpau_nvidia.so.460.73.01 MODULE:vdpau
